@@ -1,4 +1,5 @@
 # DreamZero: World Action Models Are Zero-Shot Policies
+[[Project Page](https://dreamzero0.github.io/)] [[Paper](https://dreamzero0.github.io/DreamZero.pdf)]
 
 DreamZero is a World Action Model that jointly predicts actions and videos, achieving strong zero-shot performance on unseen tasks. This release package contains everything needed to load a pretrained DreamZero model and run distributed inference via a WebSocket server.
 
