@@ -3,6 +3,19 @@
 
 DreamZero is a World Action Model that jointly predicts actions and videos, achieving strong zero-shot performance on unseen tasks. This release package contains everything needed to load a pretrained DreamZero model and run distributed inference via a WebSocket server.
 
+## Features
+
+**Available Now**
+- Pretrained DreamZero-DROID model checkpoint
+- Distributed WebSocket inference server (GB200, H100)
+- DiT caching for optimized inference (~0.6s on GB200, ~3s on H100)
+- [PolaRiS](https://polaris-evals.github.io/) simulation environment support (DROID simulation)
+- [RoboArena](https://robo-arena.github.io/) integration (DROID real)
+- Video generation and saving (MP4)
+
+**Coming Soon**
+- [Genie 3.0](https://arxiv.org/abs/2601.02078) sim environment support
+
 ## Testing Out DreamZero in Simulation with API
 We provide an inference script that directly evaluates a hosted DreamZero-DROID policy on [`sim_evals`](https://github.com/arhanjain/sim-evals). To test out the policy, first request access to the API via this form (insert link). Then, follow these instructions to install [`sim_evals`](https://github.com/arhanjain/sim-evals) and launch evaluation.
 
@@ -119,7 +132,7 @@ If you use DreamZero in your research, please cite:
 
 ## License
 
-[License Here]
+This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Support
 
