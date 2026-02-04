@@ -141,3 +141,5 @@ For issues and questions:
 - Check the troubleshooting section above
 - Review server logs for detailed error messages
 - Verify your checkpoint is compatible with this release
+
+[![Star History Chart](https://api.star-history.com/svg?repos=dreamzero0/dreamzero&type=Date)](https://star-history.com/#dreamzero0/dreamzero&Date)
