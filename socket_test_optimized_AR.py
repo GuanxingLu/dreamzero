@@ -26,8 +26,8 @@ import torch.distributed as dist
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
 # Use roboarena policy server interface
-from droid_sim_evals.policy_server import WebsocketPolicyServer as RoboarenaServer
-from droid_sim_evals.policy_server import PolicyServerConfig
+from eval_utils.policy_server import WebsocketPolicyServer as RoboarenaServer
+from eval_utils.policy_server import PolicyServerConfig
 
 logger = logging.getLogger(__name__)
 

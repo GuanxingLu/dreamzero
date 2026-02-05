@@ -23,8 +23,8 @@ import time
 
 import numpy as np
 
-import droid_sim_evals.policy_server as policy_server
-from droid_sim_evals.policy_client import WebsocketClientPolicy
+import eval_utils.policy_server as policy_server
+from eval_utils.policy_client import WebsocketClientPolicy
 
 
 def _make_ar_droid_observation(
