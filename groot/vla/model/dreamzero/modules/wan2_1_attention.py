@@ -175,9 +175,10 @@ class AttentionModule(torch.nn.Module):
             backend = "torch"
 
         # Fall back to FA backend if TE is specified but not available
-        if backend == "TE" and not TRANSFORMER_ENGINE_AVAILABLE:
-            print("Warning: Transformer Engine is not available. Falling back to FA2 backend.")
-            backend = "FA2"
+        # if backend == "TE" and not TRANSFORMER_ENGINE_AVAILABLE:
+        #     print("Warning: Transformer Engine is not available. Falling back to FA2 backend.")
+        #     backend = "FA2"
+        backend = "FA2"
 
         assert backend in ["torch", "FA2", "FA3", "TE", "torch_onnx"]
         self.backend = backend
