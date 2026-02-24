@@ -290,7 +290,7 @@ class VLA(PreTrainedModel):
             shard_files = sorted(set(index["weight_map"].values()))
             for shard_file in shard_files:
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 missing_keys, unexpected_keys = model.load_state_dict(shard_state_dict, strict=False)
                 if missing_keys:
@@ -359,7 +359,7 @@ class VLA(PreTrainedModel):
             # Load each shard
             for shard_file in set(index["weight_map"].values()):
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 state_dict.update(shard_state_dict)
                 
@@ -391,11 +391,26 @@ class VLA(PreTrainedModel):
         # Instantiate model (LoRA layers now exist from init)
         model = cls(config)
 
-        # Remove .base_layer from keys if present
-        has_base_layer = any(".base_layer." in key for key in state_dict.keys())
-        if has_base_layer:
-            print("Removing '.base_layer' from state dict keys")
-            state_dict = {k.replace(".base_layer.", "."): v for k, v in state_dict.items()}
+        # Rewrite keys for loading the LoRA weights due to PEFT wrapping.
+        # If a model is PEFT wrapped, the module hierarchy is changed by the PEFT library.
+        def rewrite_lora_state_dict_keys(state_dict, pattern, repl):
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                new_k = k.replace(pattern, repl)
+                new_state_dict[new_k] = v
+            return new_state_dict
+
+        has_target_pattern = any("action_head.model.base_model.model" in key for key in state_dict.keys())
+
+        if not has_target_pattern:
+            print("Rewriting LoRA state dict keys from 'action_head.model' to 'action_head.model.base_model.model'")
+            state_dict = rewrite_lora_state_dict_keys(
+                state_dict,
+                pattern="action_head.model",
+                repl="action_head.model.base_model.model",
+            )
+        else:
+            print("State dict already has 'action_head.model.base_model.model' pattern, skipping key rewrite")
 
         # Load weights
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -522,7 +537,7 @@ class VLA(PreTrainedModel):
             # Load each shard
             for shard_file in set(index["weight_map"].values()):
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 state_dict.update(shard_state_dict)
                 
@@ -551,7 +566,6 @@ class VLA(PreTrainedModel):
 
         # Instantiate model
         model = cls(config)
-        print("model", model)
         # Remove .base_layer from keys (e.g., 'action_head.model.base_model.model.blocks.19.self_attn.v.base_layer.bias' -> 'action_head.model.base_model.model.blocks.19.self_attn.v.bias')
         has_base_layer = any(".base_layer." in key for key in state_dict.keys())
         if has_base_layer:

@@ -337,7 +337,7 @@ class WANPolicyHead(ActionHead):
                     shard_path = os.path.join(dit_dir, shard_file)
                     if not os.path.exists(shard_path):
                         raise FileNotFoundError(f"Missing local diffusion shard: {shard_path}")
-                    print(f"Loading shard: {shard_path}")
+                    # print(f"Loading shard: {shard_path}")
                     shard_state_dict = load_file(shard_path)
                     state_dict.update(shard_state_dict)
 
@@ -1088,7 +1088,7 @@ class WANPolicyHead(ActionHead):
         self._save_debug_tensor(debug_dir, "video_input.pt", videos)
 
         if self.ip_rank == 0:
-            print("videos shape", videos.shape, self.num_frames)
+            print("videos shape: ", videos.shape, "num_frames: ", self.num_frames)
 
         start_text_encoder_event.record()
 
