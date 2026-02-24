@@ -3,8 +3,8 @@ import logging
 import socket
 import asyncio
 import os
+import random
 import http
-import logging
 import time
 import traceback
 import torch
@@ -37,6 +37,14 @@ class Args:
     timeout_seconds: int = 50000  # 10 hours default, configurable
     model_path: str = "/mnt/aws-lfs-01/shared/seonghyeony/checkpoints/dreamzero/1105/wan_action_train_i2v_multiview_agibot_diverse_subtask_subsampling_action_OTJ_1104_steps100000_gpus128_bs128_per_device1_shared_time_multiview/copy-ckpt-26000"
     enable_dit_cache: bool = False
+    seed: int = 42
+    enable_deterministic: bool = True
+    num_inference_steps: int | None = None
+    num_dit_steps: int | None = None
+    cfg_scale: float | None = None
+    save_debug_tensors: bool = False
+    debug_tensors_dir: str | None = None
+    debug_rank0_only: bool = True
     index: int = 0
     max_chunk_size: int | None = None  # If None, use config value. Otherwise override max_chunk_size for inference.
 
@@ -59,10 +67,18 @@ class ARDroidRoboarenaPolicy:
         groot_policy: GrootSimPolicy,
         signal_group: dist.ProcessGroup,
         output_dir: str | None = None,
+        debug_save_tensors: bool = False,
+        debug_root: str | None = None,
+        debug_rank: int = 0,
+        debug_rank0_only: bool = True,
     ) -> None:
         self._policy = groot_policy
         self._signal_group = signal_group
         self._output_dir = output_dir
+        self._debug_save_tensors = debug_save_tensors
+        self._debug_root = debug_root
+        self._debug_rank = debug_rank
+        self._debug_rank0_only = debug_rank0_only
         
         # Frame buffers for accumulation (per camera view)
         self._frame_buffers: dict[str, list[np.ndarray]] = {
@@ -83,6 +99,8 @@ class ARDroidRoboarenaPolicy:
         # Create output directory if specified
         if self._output_dir:
             os.makedirs(self._output_dir, exist_ok=True)
+        if self._debug_save_enabled() and self._debug_root:
+            os.makedirs(os.path.join(self._debug_root, "wrapper"), exist_ok=True)
     
     def _convert_observation(self, obs: dict) -> dict:
         """Convert roboarena observation format to AR_droid format.
@@ -241,6 +259,33 @@ class ARDroidRoboarenaPolicy:
         # Broadcast data
         data_tensor = torch.frombuffer(serialized, dtype=torch.uint8).cuda()
         dist.broadcast(data_tensor, src=0)
+
+    def _debug_save_enabled(self) -> bool:
+        if not self._debug_save_tensors:
+            return False
+        if self._debug_rank0_only and self._debug_rank != 0:
+            return False
+        return self._debug_root is not None
+
+    def _debug_to_cpu(self, value):
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().cpu()
+            if torch.is_floating_point(tensor):
+                tensor = tensor.to(dtype=torch.float32)
+            return tensor.clone()
+        if isinstance(value, dict):
+            return {k: self._debug_to_cpu(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._debug_to_cpu(v) for v in value]
+        return value
+
+    def _save_debug_pt(self, debug_dir: str | None, filename: str, value) -> None:
+        if debug_dir is None:
+            return
+        try:
+            torch.save(self._debug_to_cpu(value), os.path.join(debug_dir, filename))
+        except Exception as e:
+            logger.warning(f"Failed to save debug tensor '{filename}': {e}")
     
     def infer(self, obs: dict) -> np.ndarray:
         """Infer actions from observations.
@@ -267,6 +312,14 @@ class ARDroidRoboarenaPolicy:
         
         # Convert observation format
         converted_obs = self._convert_observation(obs)
+
+        debug_dir = None
+        if self._debug_save_enabled():
+            timestamp = datetime.datetime.now().strftime("%m_%d_%H_%M_%S")
+            debug_dir = os.path.join(self._debug_root, "wrapper", f"{self._msg_index:06d}_{timestamp}")
+            os.makedirs(debug_dir, exist_ok=True)
+            self._save_debug_pt(debug_dir, "raw_obs.pt", obs)
+            self._save_debug_pt(debug_dir, "converted_obs.pt", converted_obs)
         
         # Signal workers to continue (0 = continue)
         signal_tensor = torch.zeros(1, dtype=torch.int32, device='cpu')
@@ -283,6 +336,7 @@ class ARDroidRoboarenaPolicy:
         with torch.no_grad():
             result_batch, video_pred = self._policy.lazy_joint_forward_causal(batch)
         dist.barrier()
+        self._save_debug_pt(debug_dir, "video_pred.pt", video_pred)
         
         # Store video predictions for potential saving
         self.video_across_time.append(video_pred)
@@ -295,8 +349,10 @@ class ARDroidRoboarenaPolicy:
         for k in dir(action_chunk_dict):
             if k.startswith("action."):
                 action_dict[k] = getattr(action_chunk_dict, k)
+        self._save_debug_pt(debug_dir, "action_chunk_dict.pt", action_dict)
         
         action = self._convert_action(action_dict)
+        self._save_debug_pt(debug_dir, "action_output.pt", action)
         
         # Update first call flag
         if self._is_first_call:
@@ -736,6 +792,20 @@ def _health_check(connection: _server.ServerConnection, request: _server.Request
     # Continue with the normal request handling.
     return None
 
+def set_global_determinism(seed: int, enable_deterministic: bool) -> None:
+    logger.info(f"Set global seed={seed}, deterministic={enable_deterministic}")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if enable_deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
 
 def main(args: Args) -> None:
     # Set environment variable for DIT cache.
@@ -743,6 +813,8 @@ def main(args: Args) -> None:
 
     # Use TE cuDNN backend for attention.
     os.environ["ATTENTION_BACKEND"] = "TE"
+    if args.num_dit_steps is not None:
+        os.environ["NUM_DIT_STEPS"] = str(args.num_dit_steps)
 
     # Increase the recompile limit to 100 for inference due
     # to autoregressive nature of the model (several possible shapes).
@@ -755,6 +827,18 @@ def main(args: Args) -> None:
         "model_name": "dreamzero",
         "model_path": model_path,
     }
+
+    rank = int(os.environ.get("RANK", "0"))
+    set_global_determinism(args.seed + rank, args.enable_deterministic)
+
+    parent_dir = os.path.dirname(model_path)
+    date_suffix = datetime.datetime.now().strftime("%Y%m%d")
+    checkpoint_name = os.path.basename(model_path)
+    resolved_output_dir = os.path.join(parent_dir, f"real_world_eval_gen_{date_suffix}_{args.index}", checkpoint_name)
+    debug_tensors_dir = args.debug_tensors_dir or os.path.join(resolved_output_dir, "debug_tensors")
+    os.environ["DREAMZERO_DEBUG_SAVE_TENSORS"] = "true" if args.save_debug_tensors else "false"
+    os.environ["DREAMZERO_DEBUG_SAVE_ROOT"] = debug_tensors_dir
+    os.environ["DREAMZERO_DEBUG_RANK0_ONLY"] = "true" if args.debug_rank0_only else "false"
 
     device_mesh = init_mesh()
     rank = dist.get_rank()
@@ -770,20 +854,36 @@ def main(args: Args) -> None:
         device_mesh=device_mesh,
     )
 
+    if hasattr(policy.trained_model, "action_head"):
+        action_head = policy.trained_model.action_head
+        action_head.seed = args.seed + rank
+        if args.num_inference_steps is not None:
+            action_head.num_inference_steps = args.num_inference_steps
+        if args.cfg_scale is not None:
+            action_head.cfg_scale = args.cfg_scale
+        action_head.debug_save_tensors = args.save_debug_tensors
+        action_head.debug_save_root = debug_tensors_dir
+        action_head.debug_rank0_only = args.debug_rank0_only
+        action_head.debug_rank = rank
+        logger.info(
+            "Action head runtime config: num_inference_steps=%s cfg_scale=%s num_dit_steps=%s",
+            action_head.num_inference_steps,
+            action_head.cfg_scale,
+            os.getenv("NUM_DIT_STEPS", "unset"),
+        )
+
     # Create server for all ranks - rank 0 handles websocket, others run worker loop
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
 
     if rank == 0:
         logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
-        # Create output directory for videos
-        # Extract parent directory and checkpoint name from model_path
-        parent_dir = os.path.dirname(model_path)
-        date_suffix = datetime.datetime.now().strftime("%Y%m%d")
-        checkpoint_name = os.path.basename(model_path)
-        output_dir = os.path.join(parent_dir, f"real_world_eval_gen_{date_suffix}_{args.index}", checkpoint_name)
+        output_dir = resolved_output_dir
         os.makedirs(output_dir, exist_ok=True)
         logging.info("Videos will be saved to: %s", output_dir)
+        if args.save_debug_tensors:
+            os.makedirs(debug_tensors_dir, exist_ok=True)
+            logging.info("Debug tensors will be saved to: %s", debug_tensors_dir)
     else:
         output_dir = None
         logging.info(f"Rank {rank} starting as worker for distributed inference...")
@@ -793,6 +893,10 @@ def main(args: Args) -> None:
         groot_policy=policy,
         signal_group=signal_group,
         output_dir=output_dir,
+        debug_save_tensors=args.save_debug_tensors,
+        debug_root=debug_tensors_dir,
+        debug_rank=rank,
+        debug_rank0_only=args.debug_rank0_only,
     )
     
     # Configure server for AR_droid (2 external cameras, wrist camera, joint position actions)
