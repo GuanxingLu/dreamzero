@@ -313,8 +313,8 @@ class VLA(PreTrainedModel):
             missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
             if missing_keys:
                 print(f"Missing keys when loading pretrained weights: {missing_keys}")
-            if unexpected_keys:
-                print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
+            # if unexpected_keys:
+            #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
             if not missing_keys and not unexpected_keys:
                 print("Successfully loaded pretrained base weights")
         else:
@@ -412,8 +412,8 @@ class VLA(PreTrainedModel):
             
         if missing_keys:
             print(f"Missing keys when loading pretrained weights: {missing_keys}")
-        if unexpected_keys:
-            print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
+        # if unexpected_keys:
+        #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
         
         print("Successfully loaded pretrained weights")
 
@@ -579,8 +579,8 @@ class VLA(PreTrainedModel):
             
         if missing_keys:
             print(f"Missing keys when loading pretrained weights: {missing_keys}")
-        if unexpected_keys:
-            print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
+        # if unexpected_keys:
+        #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
         
         print("Successfully loaded pretrained weights")
 

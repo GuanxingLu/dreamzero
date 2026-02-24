@@ -28,7 +28,10 @@ NUM_CHUNKS=${NUM_CHUNKS:-1}
 FRAMES_PER_CHUNK=${FRAMES_PER_CHUNK:-4}
 NUM_INFERENCE_STEPS=${NUM_INFERENCE_STEPS:-1}
 NUM_DIT_STEPS=${NUM_DIT_STEPS:-1}
+NUM_LAYERS=${NUM_LAYERS:-1}
 CFG_SCALE=${CFG_SCALE:-1.0}
+SKIP_COMPONENT_LOADING=${SKIP_COMPONENT_LOADING:-false}
+WAN_PRETRAINED_DIR=${WAN_PRETRAINED_DIR:-"/mnt/disk_3/guanxing/dreamzero/MODEL/Wan2.1-I2V-14B-480P"}
 
 if [[ -z "${MODEL_PATH}" ]]; then
   echo "MODEL_PATH is required."
@@ -51,6 +54,10 @@ dit_cache_flag="$(to_bool_flag "enable-dit-cache" "${ENABLE_DIT_CACHE}")"
 debug_flag="$(to_bool_flag "save-debug-tensors" "${SAVE_DEBUG_TENSORS}")"
 debug_rank0_only_flag="$(to_bool_flag "debug-rank0-only" "${DEBUG_RANK0_ONLY}")"
 
+export DREAMZERO_SKIP_COMPONENT_LOADING="${SKIP_COMPONENT_LOADING}"
+export DREAMZERO_WAN_PRETRAINED_DIR="${WAN_PRETRAINED_DIR}"
+export DREAMZERO_DIT_NUM_LAYERS="${NUM_LAYERS}"
+
 cmd=(
   python -m torch.distributed.run
   --nproc_per_node="${NGPU}"
@@ -67,6 +74,7 @@ cmd=(
   --frames-per-chunk "${FRAMES_PER_CHUNK}"
   --num-inference-steps "${NUM_INFERENCE_STEPS}"
   --num-dit-steps "${NUM_DIT_STEPS}"
+  --num-layers "${NUM_LAYERS}"
   --cfg-scale "${CFG_SCALE}"
   "${det_flag}"
   "${dit_cache_flag}"
