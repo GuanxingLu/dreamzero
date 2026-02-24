@@ -1075,18 +1075,6 @@ class WANPolicyHead(ActionHead):
             self.current_start_frame = 0
 
         debug_dir = self._create_debug_dir(self.current_start_frame)
-        self._save_debug_tensor(
-            debug_dir,
-            "meta.pt",
-            {
-                "start_frame": self.current_start_frame,
-                "num_frame_per_block": self.num_frame_per_block,
-                "num_inference_steps": self.num_inference_steps,
-                "seed": self.seed,
-            },
-        )
-        self._save_debug_tensor(debug_dir, "video_input.pt", videos)
-
         if self.ip_rank == 0:
             print("videos shape: ", videos.shape, "num_frames: ", self.num_frames)
 
@@ -1096,8 +1084,6 @@ class WANPolicyHead(ActionHead):
         prompt_embs = [self.encode_prompt(text, attention_mask) for text, attention_mask in text_inputs]
         if len(prompt_embs) > 0:
             self._save_debug_tensor(debug_dir, "text_emb.pt", prompt_embs[0])
-        if len(prompt_embs) > 1:
-            self._save_debug_tensor(debug_dir, "text_emb_negative.pt", prompt_embs[1])
 
         end_text_encoder_event.record()
         
@@ -1115,7 +1101,7 @@ class WANPolicyHead(ActionHead):
             self.clip_feas = clip_feas.to(dtype=image.dtype)
             self.ys = ys.to(dtype=image.dtype)
             self._save_debug_tensor(debug_dir, "first_frame_latent.pt", image)
-        
+
         assert self.clip_feas is not None and self.ys is not None, "clip_feas and ys must be set"
         self._save_debug_tensor(debug_dir, "clip_feature.pt", self.clip_feas)
         self._save_debug_tensor(debug_dir, "ys.pt", self.ys)
@@ -1153,11 +1139,8 @@ class WANPolicyHead(ActionHead):
         end_vae_event.record()
         self._save_debug_tensor(debug_dir, "latent_input.pt", image)
         self._save_debug_tensor(debug_dir, "state_features.pt", state_features)
-
         noise_obs = self.generate_noise((image.shape[0], 16, self.num_frame_per_block, height//8, width//8), seed=self.seed, device='cuda', dtype=torch.bfloat16)
         noise_action = self.generate_noise((image.shape[0], self.action_horizon, self.model.action_dim), seed=self.seed, device='cuda', dtype=torch.bfloat16)
-        self._save_debug_tensor(debug_dir, "video_noise_init.pt", noise_obs)
-        self._save_debug_tensor(debug_dir, "action_noise_init.pt", noise_action)
         batch_size, num_channels, num_frames, height, width = noise_obs.shape
         ######### Generate video #########
         frame_seqlen = int(height * width / 4)
@@ -1261,8 +1244,6 @@ class WANPolicyHead(ActionHead):
             self.num_inference_steps, device=noise_obs.device, shift=self.sigma_shift)
         sample_scheduler_action.set_timesteps(
             self.num_inference_steps, device=noise_obs.device, shift=self.sigma_shift)
-        self._save_debug_tensor(debug_dir, "video_timesteps.pt", sample_scheduler.timesteps)
-        self._save_debug_tensor(debug_dir, "action_timesteps.pt", sample_scheduler_action.timesteps)
 
         # Decoupled inference: video sigmas end at video_final_noise instead of 0
         # This rescales the schedule so video still takes all denoising steps, 
@@ -1336,8 +1317,6 @@ class WANPolicyHead(ActionHead):
                 if index == 0:
                     self._save_debug_tensor(debug_dir, "video_noise_pred_step0.pt", flow_pred)
                     self._save_debug_tensor(debug_dir, "action_noise_pred_step0.pt", flow_pred_cond_action)
-                    self._save_debug_tensor(debug_dir, "video_noise_pred_cond_step0.pt", flow_pred_cond)
-                    self._save_debug_tensor(debug_dir, "video_noise_pred_uncond_step0.pt", flow_pred_uncond)
                 prev_predictions.append((current_timestep, flow_pred, flow_pred_cond_action))
                 max_cache_size = 2
                 if len(prev_predictions) > max_cache_size:
@@ -1374,9 +1353,8 @@ class WANPolicyHead(ActionHead):
         if self.current_start_frame == 1:
             output = torch.cat([image, output], dim=1)
         self.current_start_frame += self.num_frame_per_block
-        self._save_debug_tensor(debug_dir, "latents_final.pt", latents)
-        self._save_debug_tensor(debug_dir, "actions_final.pt", latents_action)
-        self._save_debug_tensor(debug_dir, "video_pred_final.pt", output.transpose(1, 2))
+        self._save_debug_tensor(debug_dir, "latents_0.pt", latents)
+        self._save_debug_tensor(debug_dir, "actions_0.pt", latents_action)
 
         # Do torch.cuda.synchronize() to ensure all operations are completed before timing.
         # This isn't expected to affect inference performance since it's at the end of an inference step.

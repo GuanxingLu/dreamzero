@@ -100,8 +100,12 @@ class ARDroidRoboarenaPolicy:
         # Create output directory if specified
         if self._output_dir:
             os.makedirs(self._output_dir, exist_ok=True)
-        if self._debug_save_enabled() and self._debug_root:
-            os.makedirs(os.path.join(self._debug_root, "wrapper"), exist_ok=True)
+        if (
+            self._debug_save_tensors
+            and self._debug_root
+            and (not self._debug_rank0_only or self._debug_rank == 0)
+        ):
+            os.makedirs(self._debug_root, exist_ok=True)
     
     def _convert_observation(self, obs: dict) -> dict:
         """Convert roboarena observation format to AR_droid format.
@@ -261,33 +265,6 @@ class ARDroidRoboarenaPolicy:
         data_tensor = torch.frombuffer(serialized, dtype=torch.uint8).cuda()
         dist.broadcast(data_tensor, src=0)
 
-    def _debug_save_enabled(self) -> bool:
-        if not self._debug_save_tensors:
-            return False
-        if self._debug_rank0_only and self._debug_rank != 0:
-            return False
-        return self._debug_root is not None
-
-    def _debug_to_cpu(self, value):
-        if isinstance(value, torch.Tensor):
-            tensor = value.detach().cpu()
-            if torch.is_floating_point(tensor):
-                tensor = tensor.to(dtype=torch.float32)
-            return tensor.clone()
-        if isinstance(value, dict):
-            return {k: self._debug_to_cpu(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [self._debug_to_cpu(v) for v in value]
-        return value
-
-    def _save_debug_pt(self, debug_dir: str | None, filename: str, value) -> None:
-        if debug_dir is None:
-            return
-        try:
-            torch.save(self._debug_to_cpu(value), os.path.join(debug_dir, filename))
-        except Exception as e:
-            logger.warning(f"Failed to save debug tensor '{filename}': {e}")
-    
     def infer(self, obs: dict) -> np.ndarray:
         """Infer actions from observations.
         
@@ -314,14 +291,6 @@ class ARDroidRoboarenaPolicy:
         # Convert observation format
         converted_obs = self._convert_observation(obs)
 
-        debug_dir = None
-        if self._debug_save_enabled():
-            timestamp = datetime.datetime.now().strftime("%m_%d_%H_%M_%S")
-            debug_dir = os.path.join(self._debug_root, "wrapper", f"{self._msg_index:06d}_{timestamp}")
-            os.makedirs(debug_dir, exist_ok=True)
-            self._save_debug_pt(debug_dir, "raw_obs.pt", obs)
-            self._save_debug_pt(debug_dir, "converted_obs.pt", converted_obs)
-        
         # Signal workers to continue (0 = continue)
         signal_tensor = torch.zeros(1, dtype=torch.int32, device='cpu')
         dist.broadcast(signal_tensor, src=0, group=self._signal_group)
@@ -337,7 +306,6 @@ class ARDroidRoboarenaPolicy:
         with torch.no_grad():
             result_batch, video_pred = self._policy.lazy_joint_forward_causal(batch)
         dist.barrier()
-        self._save_debug_pt(debug_dir, "video_pred.pt", video_pred)
         
         # Store video predictions for potential saving
         self.video_across_time.append(video_pred)
@@ -350,10 +318,8 @@ class ARDroidRoboarenaPolicy:
         for k in dir(action_chunk_dict):
             if k.startswith("action."):
                 action_dict[k] = getattr(action_chunk_dict, k)
-        self._save_debug_pt(debug_dir, "action_chunk_dict.pt", action_dict)
         
         action = self._convert_action(action_dict)
-        self._save_debug_pt(debug_dir, "action_output.pt", action)
         
         # Update first call flag
         if self._is_first_call:
@@ -842,6 +808,8 @@ def main(args: Args) -> None:
     os.environ["DREAMZERO_DEBUG_SAVE_TENSORS"] = "true" if args.save_debug_tensors else "false"
     os.environ["DREAMZERO_DEBUG_SAVE_ROOT"] = debug_tensors_dir
     os.environ["DREAMZERO_DEBUG_RANK0_ONLY"] = "true" if args.debug_rank0_only else "false"
+    if args.save_debug_tensors:
+        os.makedirs(debug_tensors_dir, exist_ok=True)
 
     device_mesh = init_mesh()
     rank = dist.get_rank()
@@ -886,8 +854,7 @@ def main(args: Args) -> None:
         os.makedirs(output_dir, exist_ok=True)
         logging.info("Videos will be saved to: %s", output_dir)
         if args.save_debug_tensors:
-            os.makedirs(debug_tensors_dir, exist_ok=True)
-            logging.info("Debug tensors will be saved to: %s", debug_tensors_dir)
+            logging.info("Debug tensors: %s", debug_tensors_dir)
     else:
         output_dir = None
         logging.info(f"Rank {rank} starting as worker for distributed inference...")
