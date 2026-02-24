@@ -229,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frames-per-chunk", type=int, default=4)
     parser.add_argument("--num-inference-steps", type=int, default=1)
     parser.add_argument("--num-dit-steps", type=int, default=1)
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--cfg-scale", type=float, default=1.0)
     parser.add_argument("--save-debug-tensors", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--debug-rank0-only", action=argparse.BooleanOptionalAction, default=True)
@@ -261,6 +262,8 @@ def main() -> None:
     os.environ["ENABLE_DIT_CACHE"] = "true" if args.enable_dit_cache else "false"
     os.environ["ATTENTION_BACKEND"] = "TE"
     os.environ["NUM_DIT_STEPS"] = str(args.num_dit_steps)
+    os.environ["DREAMZERO_DIT_NUM_LAYERS"] = str(args.num_layers)
+    os.environ.setdefault("DREAMZERO_SKIP_COMPONENT_LOADING", "false")
     torch._dynamo.config.recompile_limit = 800
 
     rank = int(os.environ.get("RANK", "0"))
@@ -301,10 +304,11 @@ def main() -> None:
         action_head.debug_rank0_only = args.debug_rank0_only
         action_head.debug_rank = rank
         logger.info(
-            "Action head runtime config: num_inference_steps=%s cfg_scale=%s num_dit_steps=%s",
+            "Action head runtime config: num_inference_steps=%s cfg_scale=%s num_dit_steps=%s dit_num_layers=%s",
             action_head.num_inference_steps,
             action_head.cfg_scale,
             os.getenv("NUM_DIT_STEPS", "unset"),
+            action_head.model.num_layers,
         )
 
     if rank == 0:

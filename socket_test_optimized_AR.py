@@ -41,6 +41,7 @@ class Args:
     enable_deterministic: bool = True
     num_inference_steps: int | None = None
     num_dit_steps: int | None = None
+    num_layers: int = 1
     cfg_scale: float | None = None
     save_debug_tensors: bool = False
     debug_tensors_dir: str | None = None
@@ -810,6 +811,8 @@ def set_global_determinism(seed: int, enable_deterministic: bool) -> None:
 def main(args: Args) -> None:
     # Set environment variable for DIT cache.
     os.environ["ENABLE_DIT_CACHE"] = "true" if args.enable_dit_cache else "false"
+    os.environ["DREAMZERO_DIT_NUM_LAYERS"] = str(args.num_layers)
+    os.environ.setdefault("DREAMZERO_SKIP_COMPONENT_LOADING", "false")
 
     # Use TE cuDNN backend for attention.
     os.environ["ATTENTION_BACKEND"] = "TE"
@@ -866,10 +869,11 @@ def main(args: Args) -> None:
         action_head.debug_rank0_only = args.debug_rank0_only
         action_head.debug_rank = rank
         logger.info(
-            "Action head runtime config: num_inference_steps=%s cfg_scale=%s num_dit_steps=%s",
+            "Action head runtime config: num_inference_steps=%s cfg_scale=%s num_dit_steps=%s dit_num_layers=%s",
             action_head.num_inference_steps,
             action_head.cfg_scale,
             os.getenv("NUM_DIT_STEPS", "unset"),
+            action_head.model.num_layers,
         )
 
     # Create server for all ranks - rank 0 handles websocket, others run worker loop

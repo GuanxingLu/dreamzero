@@ -3,6 +3,7 @@ import logging
 import time
 from typing import TypeAlias, cast
 import os
+from pathlib import Path
 
 from accelerate import load_checkpoint_and_dispatch
 
@@ -15,25 +16,79 @@ import torch.distributed as dist
 from torch.distributed.device_mesh import DeviceMesh
 from safetensors.torch import load_file
 import json
-from huggingface_hub import hf_hub_download
 
 
 logger = logging.getLogger(__name__)
 
-WAN_HF_REPO_ID = "Wan-AI/Wan2.1-I2V-14B-480P"
+WAN_LOCAL_DIR_ENV = "DREAMZERO_WAN_PRETRAINED_DIR"
 
 
-def hf_download(filename: str) -> str:
-    """Download a file from the Wan2.1-I2V-14B-480P HuggingFace repo to HF cache."""
-    path = hf_hub_download(repo_id=WAN_HF_REPO_ID, filename=filename)
-    return path
+def _get_local_root() -> Path:
+    env_dir = os.getenv(WAN_LOCAL_DIR_ENV)
+    if not env_dir:
+        raise FileNotFoundError(f"Local-only mode: env `{WAN_LOCAL_DIR_ENV}` is required.")
+    root = Path(env_dir).expanduser()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Local-only mode: invalid directory `{root}`.")
+    return root
+
+
+def _missing_local_file_error(filename: str) -> FileNotFoundError:
+    return FileNotFoundError(f"Local-only mode: required file '{filename}' not found.")
+
+
+def _missing_diffusion_dir_error() -> FileNotFoundError:
+    return FileNotFoundError("Local-only mode: diffusion weights directory is missing.")
 
 
 def ensure_file(path: str | None, hf_filename: str) -> str:
-    """Return a valid local path: use `path` if it exists, otherwise download from HuggingFace."""
-    if path is not None and os.path.exists(path):
-        return path
-    return hf_download(hf_filename)
+    """Resolve a required file from explicit path or fixed local root only."""
+    if path is not None:
+        explicit = Path(path).expanduser()
+        if explicit.is_file():
+            return str(explicit)
+    root = _get_local_root()
+    candidate = root / hf_filename
+    if candidate.is_file():
+        return str(candidate)
+    raise _missing_local_file_error(hf_filename)
+
+
+def ensure_diffusion_dir(path: str | None) -> str:
+    """Resolve diffusion checkpoint directory from explicit path or fixed local root."""
+    if path is not None:
+        root = Path(path).expanduser()
+    else:
+        root = _get_local_root()
+    if root.is_dir():
+        index_file = root / "diffusion_pytorch_model.safetensors.index.json"
+        single_file = root / "diffusion_pytorch_model.safetensors"
+        if index_file.is_file() or single_file.is_file():
+            return str(root)
+    raise _missing_diffusion_dir_error()
+
+
+def _get_dit_num_layers_override() -> int | None:
+    raw = os.getenv("DREAMZERO_DIT_NUM_LAYERS")
+    if raw is None or raw == "":
+        return None
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"DREAMZERO_DIT_NUM_LAYERS must be > 0, got {value}")
+    return value
+
+
+def _apply_num_layers_override(diffusion_model_cfg) -> None:
+    num_layers = _get_dit_num_layers_override()
+    if num_layers is None:
+        return
+    if isinstance(diffusion_model_cfg, dict):
+        diffusion_model_cfg["num_layers"] = num_layers
+    elif hasattr(diffusion_model_cfg, "num_layers"):
+        setattr(diffusion_model_cfg, "num_layers", num_layers)
+    else:
+        raise TypeError("diffusion_model_cfg does not support num_layers override")
+    print(f"Override DiT num_layers={num_layers}")
 
 from torch.distributions import Beta
 import torch.distributed as dist
@@ -236,76 +291,70 @@ class WANPolicyHead(ActionHead):
 
         self.cpu_offload = False
 
+        _apply_num_layers_override(config.diffusion_model_cfg)
         self.model = instantiate(config.diffusion_model_cfg)
         self.action_dim = config.action_dim
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
         
-        text_enc_path = ensure_file(
-            self.text_encoder.text_encoder_pretrained_path,
-            "models_t5_umt5-xxl-enc-bf16.pth",
+        skip_component_loading = config.skip_component_loading or (
+            os.getenv("DREAMZERO_SKIP_COMPONENT_LOADING", "false").lower() == "true"
         )
-        self.text_encoder.load_state_dict(torch.load(text_enc_path, map_location='cpu'))
-
-        img_enc_path = ensure_file(
-            self.image_encoder.image_encoder_pretrained_path,
-            "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-        )
-        self.image_encoder.model.load_state_dict(torch.load(img_enc_path, map_location='cpu'), strict=False)
-
-        vae_path = ensure_file(
-            self.vae.vae_pretrained_path,
-            "Wan2.1_VAE.pth",
-        )
-        self.vae.model.load_state_dict(torch.load(vae_path, map_location='cpu'))
-
-        if not config.skip_component_loading:
-            dit_dir = self.model.diffusion_model_pretrained_path
-            if dit_dir is None or not os.path.isdir(dit_dir):
-                index_path = hf_hub_download(repo_id=WAN_HF_REPO_ID, filename="diffusion_pytorch_model.safetensors.index.json")
-                dit_dir = os.path.dirname(index_path)
-                with open(index_path, 'r') as f:
-                    index = json.load(f)
-                for shard_file in set(index["weight_map"].values()):
-                    hf_hub_download(repo_id=WAN_HF_REPO_ID, filename=shard_file)
-
-            if dit_dir is not None:
-                safetensors_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors")
-                safetensors_index_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors.index.json")
-                state_dict = {}
-
-                if os.path.exists(safetensors_index_path):
-                    # Handle sharded safetensors
-                    print(f"Loading sharded safetensors using index: {safetensors_index_path}")
-
-                    with open(safetensors_index_path, 'r') as f:
-                        index = json.load(f)
-
-                    # Load each shard
-                    for shard_file in set(index["weight_map"].values()):
-                        shard_path = os.path.join(dit_dir, shard_file)
-                        print(f"Loading shard: {shard_path}")
-                        shard_state_dict = load_file(shard_path)
-                        state_dict.update(shard_state_dict)
-
-                elif os.path.exists(safetensors_path):
-                    # Handle single safetensors file
-                    print(f"Loading weights from safetensors: {safetensors_path}")
-                    state_dict = load_file(safetensors_path)
-
-                else:
-                    raise ValueError(f"No safetensors file found at {safetensors_path} or {safetensors_index_path}")
-
-                missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
-
-                if missing_keys:
-                    print(f"Missing keys when loading pretrained weights: {missing_keys}")
-                if unexpected_keys:
-                    print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
-
-                print("Successfully loaded pretrained weights")
+        if skip_component_loading:
+            print("Skipping individual component loading (full checkpoint only)")
         else:
-            print("Skipping individual component loading (loading from full pretrained model)")
+            text_enc_path = ensure_file(
+                self.text_encoder.text_encoder_pretrained_path,
+                "models_t5_umt5-xxl-enc-bf16.pth",
+            )
+            self.text_encoder.load_state_dict(torch.load(text_enc_path, map_location='cpu'))
+
+            img_enc_path = ensure_file(
+                self.image_encoder.image_encoder_pretrained_path,
+                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+            )
+            self.image_encoder.model.load_state_dict(torch.load(img_enc_path, map_location='cpu'), strict=False)
+
+            vae_path = ensure_file(
+                self.vae.vae_pretrained_path,
+                "Wan2.1_VAE.pth",
+            )
+            self.vae.model.load_state_dict(torch.load(vae_path, map_location='cpu'))
+
+            dit_dir = ensure_diffusion_dir(self.model.diffusion_model_pretrained_path)
+            safetensors_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors")
+            safetensors_index_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors.index.json")
+            state_dict = {}
+
+            if os.path.exists(safetensors_index_path):
+                # Handle sharded safetensors
+                print(f"Loading sharded safetensors using index: {safetensors_index_path}")
+                with open(safetensors_index_path, 'r') as f:
+                    index = json.load(f)
+
+                # Load each shard
+                for shard_file in set(index["weight_map"].values()):
+                    shard_path = os.path.join(dit_dir, shard_file)
+                    if not os.path.exists(shard_path):
+                        raise FileNotFoundError(f"Missing local diffusion shard: {shard_path}")
+                    print(f"Loading shard: {shard_path}")
+                    shard_state_dict = load_file(shard_path)
+                    state_dict.update(shard_state_dict)
+
+            elif os.path.exists(safetensors_path):
+                # Handle single safetensors file
+                print(f"Loading weights from safetensors: {safetensors_path}")
+                state_dict = load_file(safetensors_path)
+
+            else:
+                raise ValueError(f"No safetensors file found at {safetensors_path} or {safetensors_index_path}")
+
+            missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+            if missing_keys:
+                print(f"Missing keys when loading pretrained weights: {missing_keys}")
+            # if unexpected_keys:
+            #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
+            print("Successfully loaded pretrained weights")
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         # Video noise Beta distribution (biased towards high noise levels when enabled)
         self.video_beta_dist = Beta(config.video_noise_beta_alpha, config.video_noise_beta_beta)
