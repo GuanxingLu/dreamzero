@@ -276,8 +276,10 @@ def main() -> None:
     os.environ["DREAMZERO_DEBUG_SAVE_TENSORS"] = "true" if args.save_debug_tensors else "false"
     os.environ["DREAMZERO_DEBUG_SAVE_ROOT"] = debug_tensors_dir
     os.environ["DREAMZERO_DEBUG_RANK0_ONLY"] = "true" if args.debug_rank0_only else "false"
-    if rank == 0 and args.save_debug_tensors:
+    if args.save_debug_tensors:
         os.makedirs(debug_tensors_dir, exist_ok=True)
+    if rank == 0 and args.save_debug_tensors:
+        logger.info("Debug tensors: %s", debug_tensors_dir)
 
     device_mesh = init_mesh()
     rank = dist.get_rank()

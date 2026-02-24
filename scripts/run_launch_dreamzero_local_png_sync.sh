@@ -22,16 +22,31 @@ ENABLE_DIT_CACHE=${ENABLE_DIT_CACHE:-true}
 SAVE_DEBUG_TENSORS=${SAVE_DEBUG_TENSORS:-true}
 DEBUG_RANK0_ONLY=${DEBUG_RANK0_ONLY:-true}
 DEBUG_TENSORS_DIR=${DEBUG_TENSORS_DIR:-""}
+OUTPUT_ROOT=${OUTPUT_ROOT:-"outputs"}
+RUN_NAME=${RUN_NAME:-""}
 OUTPUT_DIR=${OUTPUT_DIR:-""}
 
 NUM_CHUNKS=${NUM_CHUNKS:-1}
 FRAMES_PER_CHUNK=${FRAMES_PER_CHUNK:-4}
+SKIP_INITIAL_SINGLE=${SKIP_INITIAL_SINGLE:-true}
+SKIP_RESET=${SKIP_RESET:-false}
 NUM_INFERENCE_STEPS=${NUM_INFERENCE_STEPS:-1}
 NUM_DIT_STEPS=${NUM_DIT_STEPS:-1}
 NUM_LAYERS=${NUM_LAYERS:-1}
 CFG_SCALE=${CFG_SCALE:-1.0}
 SKIP_COMPONENT_LOADING=${SKIP_COMPONENT_LOADING:-false}
 WAN_PRETRAINED_DIR=${WAN_PRETRAINED_DIR:-"/mnt/disk_3/guanxing/dreamzero/MODEL/Wan2.1-I2V-14B-480P"}
+
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  if [[ -z "${RUN_NAME}" ]]; then
+    RUN_NAME="$(date +"%Y%m%d_%H%M%S")"
+  fi
+  OUTPUT_DIR="${OUTPUT_ROOT%/}/${RUN_NAME}"
+fi
+
+if [[ -z "${DEBUG_TENSORS_DIR}" ]]; then
+  DEBUG_TENSORS_DIR="${OUTPUT_DIR%/}/debug_tensors"
+fi
 
 if [[ -z "${MODEL_PATH}" ]]; then
   echo "MODEL_PATH is required."
@@ -47,6 +62,11 @@ to_bool_flag() {
   else
     echo "--no-${key}"
   fi
+}
+
+is_true() {
+  local value="${1,,}"
+  [[ "${value}" == "1" || "${value}" == "true" || "${value}" == "yes" ]]
 }
 
 det_flag="$(to_bool_flag "enable-deterministic" "${ENABLE_DETERMINISTIC}")"
@@ -93,6 +113,18 @@ fi
 if [[ -n "${OUTPUT_DIR}" ]]; then
   cmd+=(--output-dir "${OUTPUT_DIR}")
 fi
+
+if is_true "${SKIP_INITIAL_SINGLE}"; then
+  cmd+=(--skip-initial-single)
+fi
+
+if is_true "${SKIP_RESET}"; then
+  cmd+=(--skip-reset)
+fi
+
+echo "Output dir: ${OUTPUT_DIR}"
+echo "Debug dir: ${DEBUG_TENSORS_DIR}"
+echo "Skip initial single: ${SKIP_INITIAL_SINGLE}"
 
 cmd+=("$@")
 
