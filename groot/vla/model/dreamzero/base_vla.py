@@ -290,7 +290,7 @@ class VLA(PreTrainedModel):
             shard_files = sorted(set(index["weight_map"].values()))
             for shard_file in shard_files:
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 missing_keys, unexpected_keys = model.load_state_dict(shard_state_dict, strict=False)
                 if missing_keys:
@@ -359,7 +359,7 @@ class VLA(PreTrainedModel):
             # Load each shard
             for shard_file in set(index["weight_map"].values()):
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 state_dict.update(shard_state_dict)
                 
@@ -379,8 +379,6 @@ class VLA(PreTrainedModel):
         # Instantiate model
         model = cls(config)
 
-        print("model", model)
-        
         print("main network", model.action_head.model.blocks[8].cross_attn.k.weight.shape, model.action_head.model.blocks[8].cross_attn.k.weight[0,0:10])
         print("lora weight before", model.action_head.model.blocks[8].self_attn.k.lora_A.default.weight[0,0:10])
 
@@ -535,7 +533,7 @@ class VLA(PreTrainedModel):
             # Load each shard
             for shard_file in set(index["weight_map"].values()):
                 shard_path = os.path.join(pretrained_model_name_or_path, shard_file)
-                print(f"Loading shard: {shard_path}")
+                # print(f"Loading shard: {shard_path}")
                 shard_state_dict = load_file(shard_path)
                 state_dict.update(shard_state_dict)
                 
@@ -564,7 +562,6 @@ class VLA(PreTrainedModel):
 
         # Instantiate model
         model = cls(config)
-        print("model", model)
         # Remove .base_layer from keys (e.g., 'action_head.model.base_model.model.blocks.19.self_attn.v.base_layer.bias' -> 'action_head.model.base_model.model.blocks.19.self_attn.v.bias')
         has_base_layer = any(".base_layer." in key for key in state_dict.keys())
         if has_base_layer:

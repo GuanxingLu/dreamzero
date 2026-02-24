@@ -179,6 +179,7 @@ class AttentionModule(torch.nn.Module):
         #     print("Warning: Transformer Engine is not available. Falling back to FA2 backend.")
         #     backend = "FA2"
         backend = "FA2"
+        # backend = "torch"
 
         assert backend in ["torch", "FA2", "FA3", "TE", "torch_onnx"]
         self.backend = backend
