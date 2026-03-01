@@ -1,6 +1,12 @@
 # Copied from https://github.com/huggingface/diffusers/blob/v0.31.0/src/diffusers/schedulers/scheduling_unipc_multistep.py
 # Convert unipc for flow matching
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+#
+# Key differences vs official diffusers UniPCMultistepScheduler:
+# - Flow-matching parameterization: only `flow_prediction` is supported.
+# - Uses flow-style sigma/timestep construction with optional `shift`/dynamic shifting.
+# - `step()` takes explicit `step_index` (no internal step counter / begin index state).
+# - UniP/UniC updates are `torch.compile`d and outputs are cloned for CUDA-graph safety.
 
 import math
 from typing import List, Optional, Tuple, Union
