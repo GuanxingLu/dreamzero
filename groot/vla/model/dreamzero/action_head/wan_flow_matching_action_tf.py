@@ -258,6 +258,9 @@ class WANPolicyHead(ActionHead):
         self.debug_save_tensors = os.getenv("DREAMZERO_DEBUG_SAVE_TENSORS", "false").lower() == "true"
         self.debug_save_root = os.getenv("DREAMZERO_DEBUG_SAVE_ROOT", "./debug_tensors")
         self.debug_rank0_only = os.getenv("DREAMZERO_DEBUG_RANK0_ONLY", "true").lower() == "true"
+        self.debug_save_training_tensors = (
+            os.getenv("DREAMZERO_DEBUG_SAVE_TRAINING_TENSORS", "false").lower() == "true"
+        )
         self.debug_rank = int(os.getenv("RANK", "0"))
         self.debug_call_idx = 0
 
@@ -290,71 +293,79 @@ class WANPolicyHead(ActionHead):
         self.input_embedding_dim = config.input_embedding_dim
 
         self.cpu_offload = False
+        skip_diffusion_model_init = (
+            os.getenv("DREAMZERO_SKIP_DIFFUSION_MODEL_INIT", "false").lower() == "true"
+        )
 
-        _apply_num_layers_override(config.diffusion_model_cfg)
-        self.model = instantiate(config.diffusion_model_cfg)
         self.action_dim = config.action_dim
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
-        
-        skip_component_loading = config.skip_component_loading or (
-            os.getenv("DREAMZERO_SKIP_COMPONENT_LOADING", "false").lower() == "true"
-        )
-        if skip_component_loading:
-            print("Skipping individual component loading (full checkpoint only)")
+
+        if skip_diffusion_model_init:
+            print("Skipping diffusion model initialization")
+            self.model = nn.Identity()
         else:
-            text_enc_path = ensure_file(
-                self.text_encoder.text_encoder_pretrained_path,
-                "models_t5_umt5-xxl-enc-bf16.pth",
+            _apply_num_layers_override(config.diffusion_model_cfg)
+            self.model = instantiate(config.diffusion_model_cfg)
+
+            skip_component_loading = config.skip_component_loading or (
+                os.getenv("DREAMZERO_SKIP_COMPONENT_LOADING", "false").lower() == "true"
             )
-            self.text_encoder.load_state_dict(torch.load(text_enc_path, map_location='cpu'))
-
-            img_enc_path = ensure_file(
-                self.image_encoder.image_encoder_pretrained_path,
-                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-            )
-            self.image_encoder.model.load_state_dict(torch.load(img_enc_path, map_location='cpu'), strict=False)
-
-            vae_path = ensure_file(
-                self.vae.vae_pretrained_path,
-                "Wan2.1_VAE.pth",
-            )
-            self.vae.model.load_state_dict(torch.load(vae_path, map_location='cpu'))
-
-            dit_dir = ensure_diffusion_dir(self.model.diffusion_model_pretrained_path)
-            safetensors_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors")
-            safetensors_index_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors.index.json")
-            state_dict = {}
-
-            if os.path.exists(safetensors_index_path):
-                # Handle sharded safetensors
-                print(f"Loading sharded safetensors using index: {safetensors_index_path}")
-                with open(safetensors_index_path, 'r') as f:
-                    index = json.load(f)
-
-                # Load each shard
-                for shard_file in set(index["weight_map"].values()):
-                    shard_path = os.path.join(dit_dir, shard_file)
-                    if not os.path.exists(shard_path):
-                        raise FileNotFoundError(f"Missing local diffusion shard: {shard_path}")
-                    # print(f"Loading shard: {shard_path}")
-                    shard_state_dict = load_file(shard_path)
-                    state_dict.update(shard_state_dict)
-
-            elif os.path.exists(safetensors_path):
-                # Handle single safetensors file
-                print(f"Loading weights from safetensors: {safetensors_path}")
-                state_dict = load_file(safetensors_path)
-
+            if skip_component_loading:
+                print("Skipping individual component loading (full checkpoint only)")
             else:
-                raise ValueError(f"No safetensors file found at {safetensors_path} or {safetensors_index_path}")
+                text_enc_path = ensure_file(
+                    self.text_encoder.text_encoder_pretrained_path,
+                    "models_t5_umt5-xxl-enc-bf16.pth",
+                )
+                self.text_encoder.load_state_dict(torch.load(text_enc_path, map_location='cpu'))
 
-            missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
-            if missing_keys:
-                print(f"Missing keys when loading pretrained weights: {missing_keys}")
-            # if unexpected_keys:
-            #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
-            print("Successfully loaded pretrained weights")
+                img_enc_path = ensure_file(
+                    self.image_encoder.image_encoder_pretrained_path,
+                    "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+                )
+                self.image_encoder.model.load_state_dict(torch.load(img_enc_path, map_location='cpu'), strict=False)
+
+                vae_path = ensure_file(
+                    self.vae.vae_pretrained_path,
+                    "Wan2.1_VAE.pth",
+                )
+                self.vae.model.load_state_dict(torch.load(vae_path, map_location='cpu'))
+
+                dit_dir = ensure_diffusion_dir(self.model.diffusion_model_pretrained_path)
+                safetensors_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors")
+                safetensors_index_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors.index.json")
+                state_dict = {}
+
+                if os.path.exists(safetensors_index_path):
+                    # Handle sharded safetensors
+                    print(f"Loading sharded safetensors using index: {safetensors_index_path}")
+                    with open(safetensors_index_path, 'r') as f:
+                        index = json.load(f)
+
+                    # Load each shard
+                    for shard_file in set(index["weight_map"].values()):
+                        shard_path = os.path.join(dit_dir, shard_file)
+                        if not os.path.exists(shard_path):
+                            raise FileNotFoundError(f"Missing local diffusion shard: {shard_path}")
+                        # print(f"Loading shard: {shard_path}")
+                        shard_state_dict = load_file(shard_path)
+                        state_dict.update(shard_state_dict)
+
+                elif os.path.exists(safetensors_path):
+                    # Handle single safetensors file
+                    print(f"Loading weights from safetensors: {safetensors_path}")
+                    state_dict = load_file(safetensors_path)
+
+                else:
+                    raise ValueError(f"No safetensors file found at {safetensors_path} or {safetensors_index_path}")
+
+                missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+                if missing_keys:
+                    print(f"Missing keys when loading pretrained weights: {missing_keys}")
+                # if unexpected_keys:
+                #     print(f"Unexpected keys when loading pretrained weights: {unexpected_keys}")
+                print("Successfully loaded pretrained weights")
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
         # Video noise Beta distribution (biased towards high noise levels when enabled)
         self.video_beta_dist = Beta(config.video_noise_beta_alpha, config.video_noise_beta_beta)
@@ -365,7 +376,14 @@ class WANPolicyHead(ActionHead):
         self._noise_logged = False
         self.defer_lora_injection = config.defer_lora_injection
         print("defer_lora_injection@@", self.defer_lora_injection)
-        self.set_trainable_parameters(config.tune_projector, config.tune_diffusion_model)
+        if skip_diffusion_model_init:
+            self.tune_projector = False
+            self.tune_diffusion_model = False
+            self.text_encoder.requires_grad_(False)
+            self.image_encoder.requires_grad_(False)
+            self.vae.requires_grad_(False)
+        else:
+            self.set_trainable_parameters(config.tune_projector, config.tune_diffusion_model)
 
     def set_trainable_parameters(self, tune_projector: bool, tune_diffusion_model: bool):
         self.tune_projector = tune_projector
@@ -593,6 +611,13 @@ class WANPolicyHead(ActionHead):
             self.vae.eval()
             self._vae_device_ready = True
 
+    def _offload_module(self, module: nn.Module) -> None:
+        module.cpu()
+        if module is self.vae:
+            self._vae_device_ready = False
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def encode_video(self, input_video, tiled=True, tile_size=(34, 34), tile_stride=(18, 16)):
         self._ensure_vae_on_device(input_video)
         with torch.no_grad():
@@ -618,7 +643,149 @@ class WANPolicyHead(ActionHead):
             # y shape is B * 16 * (1+(T-1)/4) * h/8 * w/8
             y = torch.concat([msk, y], dim=1)
         return clip_context, y, new_image
-    
+
+    def _normalize_training_videos(self, videos: torch.Tensor) -> torch.Tensor:
+        videos = rearrange(videos, "b t h w c -> b c t h w")
+        if videos.dtype == torch.uint8:
+            videos = videos.float() / 255.0
+            b, c, t, h, w = videos.shape
+            videos = videos.permute(0, 2, 1, 3, 4)
+            videos = videos.reshape(b * t, c, h, w)
+            videos = self.normalize_video(videos)
+            videos = videos.reshape(b, t, c, h, w).permute(0, 2, 1, 3, 4)
+            assert videos.min() >= -1.0 and videos.max() <= 1.0, "videos must be in [-1,1] range"
+            videos = videos.to(dtype=self.dtype)
+        return videos
+
+    def extract_training_alignment_tensors(self, action_input: BatchFeature) -> dict[str, torch.Tensor | None]:
+        self.set_frozen_modules_to_eval_mode()
+
+        data = action_input
+        state_features = action_input.state
+        state_mask = action_input.state_mask if "state_mask" in action_input else None
+        actions = action_input.action
+        action_mask = action_input.action_mask
+
+        if actions.numel() > 0:
+            assert actions.min() >= -1.0 and actions.max() <= 1.0, "actions must be in [-1,1] range"
+
+        videos = self._normalize_training_videos(data["images"])
+        prompt_embs = self.encode_prompt(data["text"], data["text_attention_mask"])
+        latents = self.encode_video(
+            videos,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        )
+
+        _, _, num_frames, height, width = videos.shape
+        image = videos[:, :, :1].transpose(1, 2)
+        clip_feas, ys, first_frame_latent = self.encode_image(image, num_frames, height, width)
+
+        return {
+            "videos": videos,
+            "text_embedding": prompt_embs,
+            "latents": latents,
+            "first_frame_latent": first_frame_latent,
+            "clip_feature": clip_feas,
+            "ys": ys,
+            "state": state_features,
+            "state_mask": state_mask,
+            "action": actions,
+            "action_mask": action_mask,
+        }
+
+    def extract_training_alignment_tensors_sequential(
+        self,
+        action_input: BatchFeature,
+    ) -> dict[str, torch.Tensor | None]:
+        self.set_frozen_modules_to_eval_mode()
+
+        data = action_input
+        state_features = action_input.state
+        state_mask = action_input.state_mask if "state_mask" in action_input else None
+        actions = action_input.action
+        action_mask = action_input.action_mask
+
+        if actions.numel() > 0:
+            assert actions.min() >= -1.0 and actions.max() <= 1.0, "actions must be in [-1,1] range"
+
+        videos = self._normalize_training_videos(data["images"]).cpu()
+
+        self.text_encoder.to(device=self._device, dtype=torch.bfloat16)
+        prompt_embs = self.encode_prompt(
+            data["text"].to(self._device),
+            data["text_attention_mask"].to(self._device),
+        ).cpu()
+        self._offload_module(self.text_encoder)
+
+        videos_for_encode = videos.to(device=self._device, dtype=torch.bfloat16)
+        latents = self.encode_video(
+            videos_for_encode,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        ).cpu()
+
+        _, _, num_frames, height, width = videos_for_encode.shape
+        image = videos_for_encode[:, :, :1].transpose(1, 2)
+        self.image_encoder.to(device=self._device, dtype=torch.bfloat16)
+        clip_feas, ys, first_frame_latent = self.encode_image(image, num_frames, height, width)
+        clip_feas = clip_feas.cpu()
+        ys = ys.cpu()
+        first_frame_latent = first_frame_latent.cpu()
+        self._offload_module(self.image_encoder)
+        self._offload_module(self.vae)
+
+        return {
+            "videos": videos,
+            "text_embedding": prompt_embs,
+            "latents": latents,
+            "first_frame_latent": first_frame_latent,
+            "clip_feature": clip_feas,
+            "ys": ys,
+            "state": state_features.cpu(),
+            "state_mask": None if state_mask is None else state_mask.cpu(),
+            "action": actions.cpu(),
+            "action_mask": action_mask.cpu(),
+        }
+
+    def _trim_tensor_by_mask(
+        self,
+        value: torch.Tensor | None,
+        mask: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if value is None:
+            return None
+        if mask is None or mask.numel() == 0 or mask.ndim != value.ndim:
+            return value
+
+        keep = mask.to(dtype=torch.bool).any(dim=tuple(range(mask.ndim - 1)))
+        if keep.ndim != 1 or not keep.any():
+            return value
+        last_idx = int(torch.nonzero(keep, as_tuple=False)[-1].item()) + 1
+        return value[..., :last_idx]
+
+    def save_training_alignment_tensors(
+        self,
+        output_dir: str,
+        tensors: dict[str, torch.Tensor | None],
+    ) -> None:
+        os.makedirs(output_dir, exist_ok=True)
+        trimmed_state = self._trim_tensor_by_mask(tensors["state"], tensors["state_mask"])
+        trimmed_action = self._trim_tensor_by_mask(tensors["action"], tensors["action_mask"])
+        save_map = {
+            "preprocess_text_embedding.pt": tensors["text_embedding"],
+            "preprocess_latent.pt": tensors["latents"],
+            "preprocess_first_frame_latent.pt": tensors["first_frame_latent"],
+            "preprocess_clip_feature.pt": tensors["clip_feature"],
+            "preprocess_ys.pt": tensors["ys"],
+            "preprocess_state.pt": trimmed_state,
+            "preprocess_action.pt": trimmed_action,
+        }
+        for filename, value in save_map.items():
+            self._save_debug_tensor(output_dir, filename, value)
+
     def prepare_extra_input(self, latents=None):
         return {}
 
@@ -640,48 +807,35 @@ class WANPolicyHead(ActionHead):
         return model
 
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
-        # Set frozen modules to eval
-        self.set_frozen_modules_to_eval_mode()
-
-        data = action_input 
+        data = action_input
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
         # print("embodiment_id", embodiment_id)
         has_real_action = action_input.has_real_action
-        action_mask = action_input.action_mask
+        extracted = self.extract_training_alignment_tensors(action_input)
+        state_features = extracted["state"]
+        actions = extracted["action"]
+        action_mask = extracted["action_mask"]
+        prompt_embs = extracted["text_embedding"]
+        latents = extracted["latents"]
+        first_frame_latent = extracted["first_frame_latent"]
+        clip_feas = extracted["clip_feature"]
+        ys = extracted["ys"]
+        videos = extracted["videos"]
 
-        state_features = action_input.state
-
-        actions = action_input.action
-        # assert the values of action is in between -1 and 1
-        if actions.numel() > 0:
-            assert actions.min() >= -1.0 and actions.max() <= 1.0, "actions must be in [-1,1] range"
-        videos = data["images"]
-
-        videos = rearrange(videos, "b t h w c -> b c t h w")
+        assert isinstance(state_features, torch.Tensor)
+        assert isinstance(actions, torch.Tensor)
+        assert isinstance(videos, torch.Tensor)
+        assert isinstance(prompt_embs, torch.Tensor)
+        assert isinstance(latents, torch.Tensor)
+        assert isinstance(first_frame_latent, torch.Tensor)
+        assert isinstance(clip_feas, torch.Tensor)
+        assert isinstance(ys, torch.Tensor)
         print("videos", videos.shape)
-        
 
-        if videos.dtype == torch.uint8:
-            videos = videos.float() / 255.0
-            b, c, t, h, w = videos.shape
-            videos = videos.permute(0, 2, 1, 3, 4)  # [b, t, c, h, w]
-            videos = videos.reshape(b * t, c, h, w)
-            videos = self.normalize_video(videos)
-            videos = videos.reshape(b, t, c, h, w).permute(0, 2, 1, 3, 4)  # back to [b, c, t, h, w]
-            assert videos.min() >= -1.0 and videos.max() <= 1.0, "videos must be in [-1,1] range"
-            videos = videos.to(dtype=self.dtype)
-        
-        # shape of B * max_length * dim
-        prompt_embs = self.encode_prompt(data["text"], data["text_attention_mask"])
-        
-        latents = self.encode_video(videos, self.tiled, (self.tile_size_height, self.tile_size_width), (self.tile_stride_height, self.tile_stride_width))
-
-        # print("latents shape", latents.shape, self.dtype)
-        _, _, num_frames, height, width = videos.shape
-        image = videos[:, :, :1].transpose(1, 2)
-
-        clip_feas, ys, _ = self.encode_image(image, num_frames, height, width)
+        if self.debug_save_training_tensors:
+            training_debug_dir = os.path.join(self.debug_save_root, "training")
+            self.save_training_alignment_tensors(training_debug_dir, extracted)
 
         latents = latents.to(self._device)
         clip_feas = clip_feas.to(self._device)
